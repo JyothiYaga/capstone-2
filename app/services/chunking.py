@@ -4,7 +4,7 @@ from nltk.tokenize import sent_tokenize
 from PyPDF2 import PdfReader
 from docx import Document
 
-nltk.download('punkt')
+nltk.download('punkt', quiet=True)
 
 class ChunkingService:
     def __init__(self, chunk_size=200, overlap=50):
@@ -12,13 +12,16 @@ class ChunkingService:
         self.overlap = overlap
 
     def extract_text(self, file_path):
+        """Extract text from PDF, TXT, or DOCX files."""
         text = ""
         try:
             if file_path.lower().endswith(".pdf"):
                 with open(file_path, "rb") as file:
                     reader = PdfReader(file)
                     for page in reader.pages:
-                        text += page.extract_text() + "\n"
+                        page_text = page.extract_text()
+                        if page_text:  # Only add if text was extracted
+                            text += page_text + "\n"
             
             elif file_path.lower().endswith(".txt"):
                 with open(file_path, "r", encoding="utf-8") as file:
@@ -26,7 +29,8 @@ class ChunkingService:
 
             elif file_path.lower().endswith(".docx"):
                 doc = Document(file_path)
-                text = "\n".join([para.text for para in doc.paragraphs]).strip()
+                paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+                text = "\n".join(paragraphs)
 
             else:
                 raise ValueError("Unsupported file format. Only PDF, TXT, and DOCX are allowed.")
@@ -37,39 +41,74 @@ class ChunkingService:
         return text
 
     def clean_text(self, text):
+        """Clean text by removing excess whitespace and normalizing line breaks."""
+        # Replace multiple whitespace with a single space
         text = re.sub(r'\s+', ' ', text)
+        # Remove any non-printable characters
+        text = re.sub(r'[^\x20-\x7E\n]', '', text)
         return text.strip()
 
     def split_into_sentences(self, text):
+        """Split text into sentences using NLTK."""
+        if not text:
+            return []
         return sent_tokenize(text)
 
-    def recursive_chunking(self, sentences):
+    def create_chunks(self, sentences, chunk_size, overlap):
+        """Create chunks from sentences with proper overlap handling."""
         chunks = []
-        current_chunk = ""
+        current_chunk = []
+        current_length = 0
         
         for sentence in sentences:
-            if len(current_chunk) + len(sentence) <= self.chunk_size:
-                current_chunk += " " + sentence
-            else:
-                chunks.append(current_chunk.strip())
-                current_chunk = sentence
-
+            sentence_length = len(sentence)
+            
+            # If adding this sentence would exceed chunk size, 
+            # finalize current chunk and start a new one
+            if current_length + sentence_length + 1 > chunk_size and current_chunk:
+                chunk_text = " ".join(current_chunk)
+                chunks.append(chunk_text)
+                
+                # Calculate overlap
+                overlap_size = min(len(current_chunk), 
+                                  max(1, int(len(current_chunk) * overlap / chunk_size)))
+                
+                # Keep last 'overlap_size' sentences for the next chunk
+                current_chunk = current_chunk[-overlap_size:]
+                current_length = sum(len(s) for s in current_chunk) + (len(current_chunk) - 1)
+            
+            # Add the current sentence to the chunk
+            current_chunk.append(sentence)
+            current_length += sentence_length + (1 if current_chunk else 0)
+        
+        # Add the last chunk if it's not empty
         if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        overlapped_chunks = []
-        for i in range(len(chunks)):
-            start = max(0, i - 1)
-            overlap_text = " ".join(chunks[start:i + 1])
-            overlapped_chunks.append(overlap_text[:self.chunk_size].strip())
-        
-        return overlapped_chunks
+            chunk_text = " ".join(current_chunk)
+            chunks.append(chunk_text)
+            
+        return chunks
 
-    def process(self, pdf_path):
-        raw_text = self.extract_text(pdf_path)
+    def process(self, file_path):
+        """Process a file and return chunks."""
+        raw_text = self.extract_text(file_path)
+        if not raw_text:
+            print(f"Warning: No text extracted from {file_path}")
+            return []
+            
         cleaned_text = self.clean_text(raw_text)
         sentences = self.split_into_sentences(cleaned_text)
-        return self.recursive_chunking(sentences)
+        
+        if not sentences:
+            print(f"Warning: No sentences extracted from {file_path}")
+            return []
+            
+        chunks = self.create_chunks(sentences, self.chunk_size, self.overlap)
+        
+        # Filter out empty or too small chunks
+        valid_chunks = [chunk for chunk in chunks if len(chunk) > 10]
+        
+        print(f"Created {len(valid_chunks)} chunks from {len(sentences)} sentences")
+        return valid_chunks
 
 # if __name__ == "__main__":
 #     chunker = ChunkingService(chunk_size=300, overlap=50)
